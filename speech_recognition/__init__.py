@@ -660,13 +660,12 @@ class Recognizer(AudioSource):
             'speech', 'v1beta1', http=http, discoveryServiceUrl=DISCOVERY_URL)
     # [END authenticating]
 
-    def google_cloud_recognition(self,audio_data):
+    def google_cloud_recognition(self,audio_data,service):
         speech_content = base64.b64encode(audio_data)
-        service = self.get_speech_service()
         service_request = service.speech().syncrecognize(
             body={
                 'config': {
-                    'encoding': 'LINEAR16', 
+                    'encoding': 'FLAC', 
                     'sampleRate': 16000,  # 16 khz
                     'languageCode': 'en-US',  # a BCP-47 language tag
                 },
@@ -683,22 +682,12 @@ class Recognizer(AudioSource):
             raise RequestError("recognition connection failed: {0}".format(e.reason))
         response_text = json.dumps(response)
 
-        # ignore any blank blocks
-        actual_result = []
-        if "results" in response_text:
-            for line in response_text.split("\n"):
-                if not line: continue
-                result = json.loads(line)["results"]
-                if len(result) != 0:
-                    actual_result = result[0]
-                    break
-
-        # return results
-        if "alternatives" not in actual_result: raise UnknownValueError()
-        for entry in actual_result["alternatives"]:
-            if "transcript" in entry:
-                return entry["transcript"]
-        raise UnknownValueError() # no transcriptions available
+        if "results" not in response_text: raise UnknownValueError()
+        if "alternatives" not in response_text: raise UnknownValueError()
+        result = response["results"][0]["alternatives"][0]["transcript"]
+        return result
+        #raise UnknownValueError() # no transcriptions available
+    
 
     def recognize_google(self, audio_data, key = None, language = "en-US", show_all = False):
         """
