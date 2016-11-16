@@ -466,7 +466,7 @@ class Recognizer(AudioSource):
             buffer = source.stream.read(source.CHUNK)
             energy = audioop.rms(buffer, source.SAMPLE_WIDTH) # energy of the audio signal
 
-            # dynamically adjust the energy threshold using assymmetric weighted average
+            # dynamically adjust the energy threshold using asymmetric weighted average
             damping = self.dynamic_energy_adjustment_damping ** seconds_per_buffer # account for different chunk sizes and rates
             target_energy = energy * self.dynamic_energy_ratio
             self.energy_threshold = self.energy_threshold * damping + target_energy * (1 - damping)
@@ -511,7 +511,7 @@ class Recognizer(AudioSource):
                 energy = audioop.rms(buffer, source.SAMPLE_WIDTH) # energy of the audio signal
                 if energy > self.energy_threshold: break
 
-                # dynamically adjust the energy threshold using assymmetric weighted average
+                # dynamically adjust the energy threshold using asymmetric weighted average
                 if self.dynamic_energy_threshold:
                     damping = self.dynamic_energy_adjustment_damping ** seconds_per_buffer # account for different chunk sizes and rates
                     target_energy = energy * self.dynamic_energy_ratio
@@ -575,11 +575,13 @@ class Recognizer(AudioSource):
         listener_thread.start()
         return stopper
 
-    def recognize_sphinx(self, audio_data, language = "en-US", keyword_entries = [], show_all = False):
+    def recognize_sphinx(self, audio_data, language = "en-US", keyword_entries = None, show_all = False):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using CMU Sphinx.
 
         The recognition language is determined by ``language``, an RFC5646 language tag like ``"en-US"`` or ``"en-GB"``, defaulting to US English. Out of the box, only ``en-US`` is supported. See `Notes on using `PocketSphinx <https://github.com/Uberi/speech_recognition/blob/master/reference/pocketsphinx.rst>`__ for information about installing other languages. This document is also included under ``reference/pocketsphinx.rst``.
+
+        If specified, the keywords to search for are determined by ``keyword_entries``, an iterable of tuples of the form ``(keyword, sensitivity)``, where ``keyword`` is a phrase, and ``sensitivity`` is how sensitive to this phrase the recognizer should be, on a scale of 0 (very insensitive, more false negatives) to 1 (very sensitive, more false positives) inclusive. If not specified or ``None``, no keywords are used and Sphinx will simply transcribe whatever words it recognizes. Specifying ``keyword_entries`` is more accurate than just looking for those same keywords in non-keyword-based transcriptions, because Sphinx knows specifically what sounds to look for.
 
         Returns the most likely transcription if ``show_all`` is false (the default). Otherwise, returns the Sphinx ``pocketsphinx.pocketsphinx.Decoder`` object resulting from the recognition.
 
@@ -587,7 +589,7 @@ class Recognizer(AudioSource):
         """
         assert isinstance(audio_data, AudioData), "`audio_data` must be audio data"
         assert isinstance(language, str), "`language` must be a string"
-        assert all(isinstance(keyword, str) and 0 <= sensitivity <= 1 for keyword, sensitivity in keyword_entries), "`keyword_entries` must be a list of pairs of strings and numbers between 0 and 1"
+        assert keyword_entries is None or all(isinstance(keyword, str) and 0 <= sensitivity <= 1 for keyword, sensitivity in keyword_entries), "`keyword_entries` must be `None` or a list of pairs of strings and numbers between 0 and 1"
 
         # import the PocketSphinx speech recognition module
         try:
@@ -623,7 +625,7 @@ class Recognizer(AudioSource):
         raw_data = audio_data.get_raw_data(convert_rate = 16000, convert_width = 2) # the included language models require audio to be 16-bit mono 16 kHz in little-endian format
 
         # obtain recognition results
-        if keyword_entries: # explicitly specified set of keywords
+        if keyword_entries is not None: # explicitly specified set of keywords
             with tempfile_TemporaryDirectory() as temp_directory:
                 # generate a keywords file - Sphinx documentation recommendeds sensitivities between 1e-50 and 1e-5
                 keywords_path = os.path.join(temp_directory, "keyphrases.txt")
@@ -812,34 +814,35 @@ class Recognizer(AudioSource):
                 allow_caching = False # don't allow caching, since monotonic time isn't available
         if expire_time is None or monotonic() > expire_time: # caching not enabled, first credential request, or the access token from the previous one expired
             # get an access token using OAuth
-            credential_url = "https://oxford-speech.cloudapp.net/token/issueToken"
-            credential_request = Request(credential_url, data = urlencode({
-              "grant_type": "client_credentials",
-              "client_id": "python",
-              "client_secret": key,
-              "scope": "https://speech.platform.bing.com"
-            }).encode("utf-8"))
+            credential_url = "https://api.cognitive.microsoft.com/sts/v1.0/issueToken"
+            credential_request = Request(credential_url, data = b"", headers = {
+                "Content-type": "application/x-www-form-urlencoded",
+                "Content-Length": "0",
+                "Ocp-Apim-Subscription-Key": key,
+            })
+
             if allow_caching:
                 start_time = monotonic()
+
             try:
                 credential_response = urlopen(credential_request)
             except HTTPError as e:
                 raise RequestError("recognition request failed: {0}".format(getattr(e, "reason", "status {0}".format(e.code)))) # use getattr to be compatible with Python 2.6
             except URLError as e:
                 raise RequestError("recognition connection failed: {0}".format(e.reason))
-            credential_text = credential_response.read().decode("utf-8")
-            credentials = json.loads(credential_text)
-            access_token, expiry_seconds = credentials["access_token"], float(credentials["expires_in"])
+            access_token = credential_response.read().decode("utf-8")
 
             if allow_caching:
                 # save the token for the duration it is valid for
                 self.bing_cached_access_token = access_token
-                self.bing_cached_access_token_expiry = start_time + expiry_seconds
+                self.bing_cached_access_token_expiry = start_time + 600 # according to https://www.microsoft.com/cognitive-services/en-us/Speech-api/documentation/API-Reference-REST/BingVoiceRecognition, the token expires in exactly 10 minutes
 
         wav_data = audio_data.get_wav_data(
             convert_rate = 16000, # audio samples must be 8kHz or 16 kHz
             convert_width = 2 # audio samples should be 16-bit
         )
+
+
         url = "https://speech.platform.bing.com/recognize/query?{0}".format(urlencode({
             "version": "3.0",
             "requestid": uuid.uuid4(),
